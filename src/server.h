@@ -1,10 +1,10 @@
 #pragma once
 
-#include <easy_pc/easy_pc.h>
 #include <json-c/json.h>
 #include <libubox/list.h>
-#include <libubox/runqueue.h>
 #include <libubox/uloop.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 
 typedef struct rpc_server_st rpc_server_st;
@@ -32,19 +32,16 @@ typedef struct rpc_server_st
     struct uloop_fd stdin_fd;
     struct uloop_fd out_uloop_fd;
     struct list_head write_queue;
-    struct runqueue tool_queue;
 
-    struct
-    {
-        struct uloop_fd fd;
-        int pipe[2];
-    } completion;
-
-    epc_parser_t * parser;
-    epc_parse_session_t session;
+    /* Parsing state for Content-Length framed protocol. */
+    char buf[65536];
+    size_t buf_len;
+    int content_length;
+    bool in_header;
 
     rpc_method_registry_st registry;
 
+    bool shutdown_requested;
     bool eof_reached;
     int exit_code;
 } rpc_server_st;
