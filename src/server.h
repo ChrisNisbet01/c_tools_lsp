@@ -2,6 +2,7 @@
 
 #include <json-c/json.h>
 #include <libubox/list.h>
+#include <libubox/runqueue.h>
 #include <libubox/uloop.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -32,6 +33,7 @@ typedef struct rpc_server_st
     struct uloop_fd stdin_fd;
     struct uloop_fd out_uloop_fd;
     struct list_head write_queue;
+    struct runqueue tool_queue;
 
     /* Parsing state for Content-Length framed protocol. */
     char buf[65536];

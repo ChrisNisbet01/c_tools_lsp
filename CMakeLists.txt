@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(toy_lsp C)
+project(c_tools_lsp C)
 
 option(WITH_UNIT_TESTS OFF)
 

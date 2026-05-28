@@ -1,4 +1,4 @@
-set(APP toy_lsp)
+set(APP c_tools_lsp)
 set(CMAKE_C_FLAGS "-Wall -Wextra -Werror")
 
 set(SOURCE_FILES

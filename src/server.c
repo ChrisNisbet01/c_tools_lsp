@@ -24,7 +24,8 @@ typedef struct write_queue_entry_st
 static void
 check_exit_condition(rpc_server_st * svr)
 {
-    if (svr->eof_reached && list_empty(&svr->write_queue))
+    if (svr->eof_reached && list_empty(&svr->write_queue)
+        && list_empty(&svr->tool_queue.tasks_active.list))
     {
         uloop_end();
     }
@@ -363,6 +364,8 @@ run_server(rpc_server_st * const svr, int const in_fd, int const out_fd)
 
     uloop_init();
     INIT_LIST_HEAD(&svr->write_queue);
+    runqueue_init(&svr->tool_queue);
+    svr->tool_queue.max_running_tasks = 4;
 
     rpc_server_register_handlers(svr);
 
@@ -376,6 +379,7 @@ run_server(rpc_server_st * const svr, int const in_fd, int const out_fd)
     uloop_run();
 
     rpc_server_registry_cleanup(svr);
+    runqueue_kill(&svr->tool_queue);
     documents_cleanup();
     uloop_done();
 

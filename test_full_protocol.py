@@ -120,5 +120,5 @@ def start_lsp_server(command):
 
 
 if __name__ == "__main__":
-    server_command = ['./build/src/toy_lsp']
+    server_command = ['./build/src/c_tools_lsp']
     start_lsp_server(server_command)

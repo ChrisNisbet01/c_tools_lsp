@@ -4,13 +4,25 @@
 #include "server.h"
 #include "utils.h"
 
-#include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <libubox/runqueue.h>
 #include <libubox/uloop.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/*
+ * Path to the cyclomatic_complexity tool binary.
+ * Adjust this to match your installation.
+ */
+#define CYCLOMATIC_COMPLEXITY_PATH                                    \
+    "/home/chris/projects/c_tools/cyclomatic_complexity/build/"       \
+    "cyclomatic_complexity"
+
+/* --- Helpers --- */
 
 static void
 queue_success_response(rpc_server_st * svr, struct json_object * id, struct json_object * result)
@@ -41,7 +53,6 @@ handle_initialize(rpc_server_st * svr, struct json_object * params, struct json_
 
     struct json_object * capabilities = json_object_new_object();
     json_object_object_add(capabilities, "textDocumentSync", json_object_new_int(1));
-    json_object_object_add(capabilities, "hoverProvider", json_object_new_boolean(true));
     json_object_object_add(result, "capabilities", capabilities);
 
     queue_success_response(svr, id, result);
@@ -67,11 +78,10 @@ handle_exit(rpc_server_st * svr, struct json_object * params, struct json_object
     UNUSED_PARAM(params);
     UNUSED_PARAM(id);
 
-    /* Stop reading stdin so no more callbacks fire during teardown. */
     uloop_fd_delete(&svr->stdin_fd);
     svr->eof_reached = true;
 
-    if (list_empty(&svr->write_queue))
+    if (list_empty(&svr->write_queue) && list_empty(&svr->tool_queue.tasks_active.list))
     {
         uloop_end();
     }
@@ -168,200 +178,305 @@ handle_text_document_did_close(rpc_server_st * svr, struct json_object * params,
     return true;
 }
 
-/* --- Completion feature --- */
+/* --- Function Complexity feature --- */
 
-static bool
-handle_text_document_completion(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+typedef struct complexity_context_st
 {
-    (void)svr;
+    rpc_server_st * svr;
+    struct runqueue_process run_proc;
+    struct uloop_fd pipe_fd;
+    struct json_object * id;
+    struct json_object * params;
+    char * output;
+    size_t output_len;
+    char * temp_path;
+} complexity_context_st;
 
-    struct json_object * text_document = NULL;
-    if (!json_object_object_get_ex(params, "textDocument", &text_document))
+static void
+complexity_pipe_cb(struct uloop_fd * u, unsigned int events)
+{
+    UNUSED_PARAM(events);
+    complexity_context_st * ctx = container_of(u, complexity_context_st, pipe_fd);
+    char buf[4096];
+    ssize_t n;
+
+    while ((n = read(u->fd, buf, sizeof(buf))) > 0)
     {
-        return false;
-    }
-
-    struct json_object * uri_obj = NULL;
-    if (!json_object_object_get_ex(text_document, "uri", &uri_obj))
-    {
-        return false;
-    }
-
-    char const * uri = json_object_get_string(uri_obj);
-    document_st * doc = documents_lookup(uri);
-    if (doc == NULL)
-    {
-        return false;
-    }
-
-    /* Collect unique words. */
-    size_t word_cap = 128;
-    size_t word_count = 0;
-    char ** words = malloc(word_cap * sizeof(*words));
-    bool in_word = false;
-    char word_buf[256];
-    size_t word_pos = 0;
-
-    for (char const * p = doc->text; *p != '\0'; p++)
-    {
-        if (isspace((unsigned char)*p))
+        char * new_output = realloc(ctx->output, ctx->output_len + (size_t)n + 1);
+        if (!new_output)
         {
-            if (in_word)
+            perror("realloc");
+            return;
+        }
+        ctx->output = new_output;
+        memcpy(ctx->output + ctx->output_len, buf, (size_t)n);
+        ctx->output_len += (size_t)n;
+        ctx->output[ctx->output_len] = '\0';
+    }
+
+    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK))
+    {
+        uloop_fd_delete(u);
+        close(u->fd);
+        u->fd = -1;
+    }
+}
+
+static void
+complexity_task_complete_cb(struct runqueue * q, struct runqueue_task * t)
+{
+    (void)q;
+    complexity_context_st * ctx = container_of(t, complexity_context_st, run_proc.task);
+
+    /* Final read to capture any remaining output. */
+    if (ctx->pipe_fd.fd != -1)
+    {
+        complexity_pipe_cb(&ctx->pipe_fd, ULOOP_READ);
+
+        if (ctx->pipe_fd.fd != -1)
+        {
+            uloop_fd_delete(&ctx->pipe_fd);
+            close(ctx->pipe_fd.fd);
+            ctx->pipe_fd.fd = -1;
+        }
+    }
+
+    /* Parse the JSON output from the complexity tool. */
+    int complexity_value = -1;
+    char func_name_buf[256] = "";
+
+    if (ctx->output && ctx->output[0])
+    {
+        fprintf(stderr, "[LSP] complexity output: %s\n", ctx->output);
+        struct json_object * arr = json_tokener_parse(ctx->output);
+
+        if (arr && json_object_is_type(arr, json_type_array))
+        {
+            int const len = json_object_array_length(arr);
+            if (len > 0)
             {
-                word_buf[word_pos] = '\0';
-                if (word_pos > 0)
+                struct json_object * item = json_object_array_get_idx(arr, 0);
+                struct json_object * comp_obj = NULL;
+                struct json_object * name_obj = NULL;
+
+                if (json_object_object_get_ex(item, "complexity", &comp_obj))
                 {
-                    bool seen = false;
-                    for (size_t i = 0; i < word_count; i++)
-                    {
-                        if (strcmp(words[i], word_buf) == 0)
-                        {
-                            seen = true;
-                            break;
-                        }
-                    }
-                    if (!seen)
-                    {
-                        if (word_count == word_cap)
-                        {
-                            word_cap *= 2;
-                            words = realloc(words, word_cap * sizeof(*words));
-                        }
-                        words[word_count] = strdup(word_buf);
-                        word_count++;
-                    }
+                    complexity_value = json_object_get_int(comp_obj);
                 }
-                in_word = false;
-                word_pos = 0;
+                if (json_object_object_get_ex(item, "function_name", &name_obj))
+                {
+                    snprintf(
+                        func_name_buf, sizeof(func_name_buf), "%s",
+                        json_object_get_string(name_obj)
+                    );
+                }
             }
         }
-        else if (!in_word)
-        {
-            in_word = true;
-            word_buf[0] = *p;
-            word_pos = 1;
-        }
-        else
-        {
-            if (word_pos < sizeof(word_buf) - 1)
-            {
-                word_buf[word_pos++] = *p;
-            }
-        }
+        json_object_put(arr);
     }
 
-    /* Handle last word. */
-    if (in_word && word_pos > 0)
-    {
-        word_buf[word_pos] = '\0';
-        bool seen = false;
-        for (size_t i = 0; i < word_count; i++)
-        {
-            if (strcmp(words[i], word_buf) == 0)
-            {
-                seen = true;
-                break;
-            }
-        }
-        if (!seen)
-        {
-            if (word_count == word_cap)
-            {
-                word_cap *= 2;
-                words = realloc(words, word_cap * sizeof(*words));
-            }
-            words[word_count] = strdup(word_buf);
-            word_count++;
-        }
-    }
-
-    /* Build completion items array. */
-    struct json_object * items = json_object_new_array();
-    for (size_t i = 0; i < word_count; i++)
-    {
-        struct json_object * item = json_object_new_object();
-        json_object_object_add(item, "label", json_object_new_string(words[i]));
-        json_object_object_add(item, "kind", json_object_new_int(1)); /* Text completion kind */
-        json_object_object_add(item, "detail", json_object_new_string("word"));
-        json_object_array_add(items, item);
-        free(words[i]);
-    }
-    free(words);
-
+    /* Build and queue the response. */
     struct json_object * result = json_object_new_object();
-    json_object_object_add(result, "isIncomplete", json_object_new_boolean(false));
-    json_object_object_add(result, "items", items);
-
-    queue_success_response(svr, id, result);
-
-    return true;
-}
-
-/* --- Hover feature --- */
-
-static size_t
-count_words(char const * text)
-{
-    size_t count = 0;
-    bool in_word = false;
-
-    for (char const * p = text; *p != '\0'; p++)
+    json_object_object_add(result, "complexity", json_object_new_int(complexity_value));
+    if (func_name_buf[0])
     {
-        if (isspace((unsigned char)*p))
-        {
-            in_word = false;
-        }
-        else if (!in_word)
-        {
-            in_word = true;
-            count++;
-        }
+        json_object_object_add(result, "function_name", json_object_new_string(func_name_buf));
     }
 
-    return count;
+    queue_success_response(ctx->svr, ctx->id, result);
+
+    /* Clean up temp file. */
+    if (ctx->temp_path)
+    {
+        unlink(ctx->temp_path);
+        free(ctx->temp_path);
+    }
+
+    json_object_put(ctx->id);
+    json_object_put(ctx->params);
+    free(ctx->output);
+    free(ctx);
 }
 
-static bool
-handle_text_document_hover(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+static void
+complexity_run_cb(struct runqueue * q, struct runqueue_task * t)
 {
-    (void)svr;
+    complexity_context_st * ctx = container_of(t, complexity_context_st, run_proc.task);
 
-    struct json_object * text_document = NULL;
-    if (!json_object_object_get_ex(params, "textDocument", &text_document))
+    /* Extract URI and function name from the stored params. */
+    struct json_object * text_document_obj = NULL;
+    struct json_object * func_name_obj = NULL;
+
+    json_object_object_get_ex(ctx->params, "textDocument", &text_document_obj);
+    json_object_object_get_ex(ctx->params, "functionName", &func_name_obj);
+
+    if (!text_document_obj || !func_name_obj)
     {
-        return false;
+        fprintf(stderr, "[LSP] complexity: missing textDocument or functionName\n");
+        runqueue_task_complete(t);
+        return;
     }
 
     struct json_object * uri_obj = NULL;
-    if (!json_object_object_get_ex(text_document, "uri", &uri_obj))
-    {
-        return false;
-    }
-
+    json_object_object_get_ex(text_document_obj, "uri", &uri_obj);
     char const * uri = json_object_get_string(uri_obj);
-    document_st * doc = documents_lookup(uri);
-    if (doc == NULL)
+    char const * function_name = json_object_get_string(func_name_obj);
+
+    fprintf(
+        stderr, "[LSP] complexity: uri=%s, function=%s\n",
+        uri ? uri : "(null)", function_name ? function_name : "(null)"
+    );
+
+    if (!uri || !function_name)
     {
+        runqueue_task_complete(t);
+        return;
+    }
+
+    /* Look up the document text from the in-memory store. */
+    document_st * doc = documents_lookup(uri);
+    if (!doc)
+    {
+        fprintf(stderr, "[LSP] complexity: document not found: %s\n", uri);
+        runqueue_task_complete(t);
+        return;
+    }
+
+    /* Write document text to a temporary file. */
+    char tmp_pattern[] = "/tmp/c_tools_XXXXXX";
+    int tmp_fd = mkstemp(tmp_pattern);
+    if (tmp_fd < 0)
+    {
+        perror("mkstemp");
+        runqueue_task_complete(t);
+        return;
+    }
+
+    size_t text_len = strlen(doc->text);
+    ssize_t written = write(tmp_fd, doc->text, text_len);
+    if (written < 0 || (size_t)written != text_len)
+    {
+        perror("write");
+        close(tmp_fd);
+        unlink(tmp_pattern);
+        runqueue_task_complete(t);
+        return;
+    }
+    close(tmp_fd);
+
+    ctx->temp_path = strdup(tmp_pattern);
+    fprintf(stderr, "[LSP] complexity: wrote temp file %s\n", ctx->temp_path);
+
+    /* Create a pipe to capture child stdout. */
+    int pipefds[2];
+    if (pipe(pipefds) < 0)
+    {
+        perror("pipe");
+        unlink(ctx->temp_path);
+        free(ctx->temp_path);
+        ctx->temp_path = NULL;
+        runqueue_task_complete(t);
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        perror("fork");
+        close(pipefds[0]);
+        close(pipefds[1]);
+        unlink(ctx->temp_path);
+        free(ctx->temp_path);
+        ctx->temp_path = NULL;
+        runqueue_task_complete(t);
+        return;
+    }
+
+    if (pid == 0)
+    {
+        /* Child process: redirect stdout to the pipe and exec the tool. */
+        close(pipefds[0]);
+
+        if (dup2(pipefds[1], STDOUT_FILENO) < 0)
+        {
+            _exit(127);
+        }
+        close(pipefds[1]);
+
+        char * const argv[] = {
+            "cyclomatic_complexity",
+            "--no-preprocess",
+            "-j",
+            "-f",
+            (char *)function_name,
+            (char *)ctx->temp_path,
+            NULL
+        };
+
+        execv(CYCLOMATIC_COMPLEXITY_PATH, argv);
+        perror("execv failed");
+        _exit(127);
+    }
+
+    /* Parent process. */
+    close(pipefds[1]);
+
+    int flags = fcntl(pipefds[0], F_GETFL, 0);
+    fcntl(pipefds[0], F_SETFL, flags | O_NONBLOCK);
+
+    ctx->pipe_fd.fd = pipefds[0];
+    uloop_fd_add(&ctx->pipe_fd, ULOOP_READ);
+
+    runqueue_process_add(q, &ctx->run_proc, pid);
+}
+
+static void
+complexity_cancel_cb(struct runqueue * q, struct runqueue_task * t, int type)
+{
+    runqueue_process_cancel_cb(q, t, type);
+}
+
+static const struct runqueue_task_type complexity_task_type = {
+    .run = complexity_run_cb,
+    .cancel = complexity_cancel_cb,
+    .kill = runqueue_process_kill_cb,
+};
+
+static bool
+handle_function_complexity(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+{
+    struct json_object * text_document_obj = NULL;
+    struct json_object * func_name_obj = NULL;
+
+    if (!json_object_object_get_ex(params, "textDocument", &text_document_obj)
+        || !json_object_object_get_ex(params, "functionName", &func_name_obj))
+    {
+        fprintf(stderr, "[LSP] complexity request missing textDocument or functionName\n");
         return false;
     }
 
-    size_t words = count_words(doc->text);
-    size_t chars = strlen(doc->text);
+    if (!json_object_is_type(text_document_obj, json_type_object)
+        || !json_object_is_type(func_name_obj, json_type_string))
+    {
+        fprintf(stderr, "[LSP] complexity request: invalid parameter types\n");
+        return false;
+    }
 
-    char value[256];
-    snprintf(value, sizeof(value), "**Toy LSP — Document Stats**\n- Words: %zu\n- Characters: %zu", words, chars);
+    complexity_context_st * ctx = calloc(1, sizeof(*ctx));
+    ctx->svr = svr;
+    ctx->id = id ? json_object_get(id) : NULL;
+    ctx->params = params ? json_object_get(params) : NULL;
+    ctx->pipe_fd.cb = complexity_pipe_cb;
+    ctx->pipe_fd.fd = -1;
+    ctx->run_proc.task.type = &complexity_task_type;
+    ctx->run_proc.task.complete = complexity_task_complete_cb;
 
-    struct json_object * markup = json_object_new_object();
-    json_object_object_add(markup, "kind", json_object_new_string("markdown"));
-    json_object_object_add(markup, "value", json_object_new_string(value));
-
-    struct json_object * result = json_object_new_object();
-    json_object_object_add(result, "contents", markup);
-
-    queue_success_response(svr, id, result);
+    runqueue_task_add(&svr->tool_queue, &ctx->run_proc.task, false);
 
     return true;
 }
+
+/* --- Registration --- */
 
 void
 rpc_server_register_handlers(rpc_server_st * svr)
@@ -372,6 +487,5 @@ rpc_server_register_handlers(rpc_server_st * svr)
     rpc_server_register_method(svr, "textDocument/didOpen", handle_text_document_did_open);
     rpc_server_register_method(svr, "textDocument/didChange", handle_text_document_did_change);
     rpc_server_register_method(svr, "textDocument/didClose", handle_text_document_did_close);
-    rpc_server_register_method(svr, "textDocument/completion", handle_text_document_completion);
-    rpc_server_register_method(svr, "textDocument/hover", handle_text_document_hover);
+    rpc_server_register_method(svr, "textDocument/functionComplexity", handle_function_complexity);
 }

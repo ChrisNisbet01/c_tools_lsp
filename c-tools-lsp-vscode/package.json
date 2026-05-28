@@ -1,0 +1,56 @@
+{
+  "name": "c-tools-lsp",
+  "displayName": "C Tools LSP",
+  "description": "LSP server for C code analysis tools (cyclomatic complexity, etc.)",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "activationEvents": [
+    "onLanguage:c"
+  ],
+  "main": "./extension.js",
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "c",
+        "extensions": [
+          ".c"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "cToolsLsp.calculateComplexity",
+        "title": "Calculate Cyclomatic Complexity"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "cToolsLsp.calculateComplexity",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "C Tools LSP",
+      "properties": {
+        "cToolsLsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the c_tools_lsp server binary. If empty, looks next to the extension."
+        }
+      }
+    }
+  }
+}
