@@ -47,7 +47,33 @@ queue_success_response(rpc_server_st * svr, struct json_object * id, struct json
 static bool
 handle_initialize(rpc_server_st * svr, struct json_object * params, struct json_object * id)
 {
-    (void)params;
+    struct json_object * init_opts = NULL;
+    struct json_object * include_paths_arr = NULL;
+
+    if (json_object_object_get_ex(params, "initializationOptions", &init_opts))
+    {
+        if (json_object_object_get_ex(init_opts, "includePaths", &include_paths_arr)
+            && json_object_is_type(include_paths_arr, json_type_array))
+        {
+            int const count = json_object_array_length(include_paths_arr);
+            if (count > 0)
+            {
+                svr->include_paths = calloc((size_t)count, sizeof(char *));
+                if (svr->include_paths)
+                {
+                    svr->include_paths_count = count;
+                    for (int i = 0; i < count; i++)
+                    {
+                        struct json_object * elem = json_object_array_get_idx(include_paths_arr, i);
+                        if (json_object_is_type(elem, json_type_string))
+                        {
+                            svr->include_paths[i] = strdup(json_object_get_string(elem));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     struct json_object * result = json_object_new_object();
 
@@ -403,15 +429,44 @@ complexity_run_cb(struct runqueue * q, struct runqueue_task * t)
         }
         close(pipefds[1]);
 
-        char * const argv[] = {
-            "cyclomatic_complexity",
-            "--no-preprocess",
-            "-j",
-            "-f",
-            (char *)function_name,
-            (char *)ctx->temp_path,
-            NULL
-        };
+        /* Build argv dynamically.
+         * With include paths: prog -j -f <func> -I <p1> -I <p2> ... <tmpfile> NULL
+         * Without:           prog --no-preprocess -j -f <func> <tmpfile> NULL
+         */
+        int const num_inc_paths = ctx->svr->include_paths_count;
+        int const use_preprocess_flag = (num_inc_paths == 0);
+        int const argc = 1                    /* program name */
+                       + (use_preprocess_flag ? 1 : 0)  /* --no-preprocess */
+                       + 2                    /* -j -f */
+                       + 1                    /* function name */
+                       + (num_inc_paths * 2)  /* -I path pairs */
+                       + 1                    /* temp path */
+                       + 1;                   /* NULL terminator */
+        char ** argv = malloc((size_t)argc * sizeof(char *));
+        if (!argv)
+        {
+            _exit(127);
+        }
+
+        int arg_idx = 0;
+        argv[arg_idx++] = "cyclomatic_complexity";
+        if (use_preprocess_flag)
+        {
+            argv[arg_idx++] = "--no-preprocess";
+        }
+        argv[arg_idx++] = "-j";
+        argv[arg_idx++] = "-f";
+        argv[arg_idx++] = (char *)function_name;
+        for (int i = 0; i < num_inc_paths; i++)
+        {
+            if (ctx->svr->include_paths[i])
+            {
+                argv[arg_idx++] = "-I";
+                argv[arg_idx++] = ctx->svr->include_paths[i];
+            }
+        }
+        argv[arg_idx++] = (char *)ctx->temp_path;
+        argv[arg_idx] = NULL;
 
         execv(CYCLOMATIC_COMPLEXITY_PATH, argv);
         perror("execv failed");

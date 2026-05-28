@@ -49,6 +49,12 @@
           "type": "string",
           "default": "",
           "description": "Path to the c_tools_lsp server binary. If empty, looks next to the extension."
+        },
+        "cToolsLsp.includePaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Include paths to pass to the cyclomatic complexity tool for preprocessing."
         }
       }
     }

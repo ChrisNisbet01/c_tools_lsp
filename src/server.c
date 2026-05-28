@@ -398,6 +398,13 @@ run_server(rpc_server_st * const svr, int const in_fd, int const out_fd)
     documents_cleanup();
     free(svr->buf);
     svr->buf = NULL;
+    for (int i = 0; i < svr->include_paths_count; i++)
+    {
+        free(svr->include_paths[i]);
+    }
+    free(svr->include_paths);
+    svr->include_paths = NULL;
+    svr->include_paths_count = 0;
     uloop_done();
 
     if (in_fd != STDIN_FILENO)

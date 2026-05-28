@@ -44,6 +44,9 @@ typedef struct rpc_server_st
 
     rpc_method_registry_st registry;
 
+    char ** include_paths;
+    int include_paths_count;
+
     bool shutdown_requested;
     bool eof_reached;
     int exit_code;

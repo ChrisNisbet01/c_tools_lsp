@@ -3,75 +3,118 @@ import threading
 import sys
 import json
 import time
+import os
+
+SERVER_PATH = './build/src/c_tools_lsp'
 
 def stream_reader(stream, prefix):
-    # Read raw bytes
+    buf = b''
     while True:
-        data = stream.read(1024) # Read in 1KB chunks
+        data = stream.read(1)
         if not data:
             break
-        print(f"[{prefix}] {data.decode('utf-8', errors='replace')}", end='', flush=True)
+        buf += data
+        if buf.endswith(b'\r\n\r\n'):
+            header = buf.decode('utf-8', errors='replace')
+            clen = 0
+            for line in header.strip().split('\r\n'):
+                if line.lower().startswith('content-length:'):
+                    clen = int(line.split(':')[1].strip())
+            body = stream.read(clen)
+            content = body.decode('utf-8', errors='replace')
+            print(f"[{prefix}] {content}", flush=True)
+            buf = b''
 
+def send_msg(process, msg):
+    content = json.dumps(msg)
+    header = f"Content-Length: {len(content)}\r\n\r\n{content}"
+    process.stdin.write(header.encode('utf-8'))
+    process.stdin.flush()
 
-def start_lsp_server(command):
-    # Start the LSP server process
+def main():
     process = subprocess.Popen(
-        command,
+        [SERVER_PATH],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        bufsize=0  # Unbuffered
+        bufsize=0
     )
 
-    # Start threads to monitor stdout and stderr
-    threading.Thread(target=stream_reader, args=(process.stdout, "STDOUT"), daemon=True).start(),
+    threading.Thread(target=stream_reader, args=(process.stdout, "STDOUT"), daemon=True).start()
     threading.Thread(target=stream_reader, args=(process.stderr, "STDERR"), daemon=True).start()
 
-    # Define the LSP Initialize message
-    # Note: LSP requires a Content-Length header followed by two \r\n
+    time.sleep(0.3)
+
+    # Initialize with include paths
     msg = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
-        "params": {"processId": None, "rootUri": None, "capabilities": {}}
+        "params": {
+            "processId": None,
+            "rootUri": None,
+            "capabilities": {},
+            "initializationOptions": {
+                "includePaths": [os.path.abspath("src")]
+            }
+        }
     }
-    content = json.dumps(msg)
-    header = f"Content-Length: {len(content)}\r\n\r\n{content}"
+    send_msg(process, msg)
+    time.sleep(0.3)
 
-    # Send the message
-    print("[SYSTEM] Sending initialize message...")
-    process.stdin.write(header.encode('utf-8'))
-    process.stdin.flush()
+    # initialized notification
+    msg = {
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }
+    send_msg(process, msg)
+    time.sleep(0.3)
 
-    # Set the duration to stay alive (e.g., 5 seconds)
-    timeout = 5 
-    start_time = time.time()
-    
-    print(f"[SYSTEM] Monitoring server for {timeout} seconds...")
-    
-    try:
-        while time.time() - start_time < timeout:
-            if process.poll() is not None:
-                # The process died before the timer finished
-                break
-            time.sleep(0.5)
-        else:
-            print("[SYSTEM] Timeout reached. Shutting down server...")
-    except KeyboardInterrupt:
-        print("\n[SYSTEM] Terminating server...")
+    # didOpen with server.c content
+    with open('src/server.c', 'r') as f:
+        text = f.read()
+    msg = {
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": "file:///test/server.c",
+                "languageId": "c",
+                "version": 1,
+                "text": text
+            }
+        }
+    }
+    send_msg(process, msg)
+    time.sleep(0.3)
+
+    # function complexity request for stdin_cb
+    msg = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/functionComplexity",
+        "params": {
+            "textDocument": {"uri": "file:///test/server.c"},
+            "functionName": "stdin_cb"
+        }
+    }
+    send_msg(process, msg)
+
+    timeout = 10
+    start = time.time()
+    while time.time() - start < timeout:
+        if process.poll() is not None:
+            break
+        time.sleep(0.2)
+
+    if process.poll() is None:
         process.terminate()
-    finally:
-        # Gracefully terminate the process if it's still running
-        if process.poll() is None:
-            process.terminate()
-            # Optional: give it a moment to clean up before final check
-            process.wait(timeout=2)
-            
-        return_code = process.poll()
-        print(f"[SYSTEM] Server exited with return code: {return_code}")
+        process.wait(timeout=2)
 
+    ret = process.poll()
+    print(f"[SYSTEM] Server exited with code: {ret}")
+    return ret
 
 if __name__ == "__main__":
-    # Replace with your actual LSP server command (e.g., ["pyright-langserver", "--stdio"])
-    server_command = ['./build/src/c_tools_lsp']
-    start_lsp_server(server_command)
+    sys.exit(main())

@@ -19,7 +19,10 @@ function activate(context) {
 
   const clientOptions = {
     documentSelector: [{ scheme: 'file', language: 'c' }],
-    trace: 'verbose'
+    trace: 'verbose',
+    initializationOptions: {
+      includePaths: vscode.workspace.getConfiguration('cToolsLsp').get('includePaths', [])
+    }
   };
 
   client = new LanguageClient('cToolsLsp', 'C Tools LSP', serverOptions, clientOptions);
