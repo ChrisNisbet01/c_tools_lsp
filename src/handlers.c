@@ -18,8 +18,8 @@
  * Path to the cyclomatic_complexity tool binary.
  * Adjust this to match your installation.
  */
-#define CYCLOMATIC_COMPLEXITY_PATH                                    \
-    "/home/chris/projects/c_tools/cyclomatic_complexity/build/"       \
+#define CYCLOMATIC_COMPLEXITY_PATH                                                                                     \
+    "/home/chris/projects/c_tools/cyclomatic_complexity/build/"                                                        \
     "cyclomatic_complexity"
 
 /* --- Helpers --- */
@@ -56,6 +56,7 @@ handle_initialize(rpc_server_st * svr, struct json_object * params, struct json_
             && json_object_is_type(include_paths_arr, json_type_array))
         {
             int const count = json_object_array_length(include_paths_arr);
+            fprintf(stderr, "[LSP] initialize: received %d include paths\n", count);
             if (count > 0)
             {
                 svr->include_paths = calloc((size_t)count, sizeof(char *));
@@ -68,11 +69,20 @@ handle_initialize(rpc_server_st * svr, struct json_object * params, struct json_
                         if (json_object_is_type(elem, json_type_string))
                         {
                             svr->include_paths[i] = strdup(json_object_get_string(elem));
+                            fprintf(stderr, "[LSP] initialize: include_paths[%d] = \"%s\"\n", i, svr->include_paths[i]);
                         }
                     }
                 }
             }
         }
+        else
+        {
+            fprintf(stderr, "[LSP] initialize: no includePaths in initializationOptions\n");
+        }
+    }
+    else
+    {
+        fprintf(stderr, "[LSP] initialize: no initializationOptions\n");
     }
 
     struct json_object * result = json_object_new_object();
@@ -127,6 +137,7 @@ handle_text_document_did_open(rpc_server_st * svr, struct json_object * params, 
     if (!json_object_object_get_ex(params, "textDocument", &text_document))
     {
         fprintf(stderr, "[LSP] Error: 'textDocument' field missing in params\n");
+        
         return false;
     }
 
@@ -136,6 +147,7 @@ handle_text_document_did_open(rpc_server_st * svr, struct json_object * params, 
         || !json_object_object_get_ex(text_document, "text", &text_obj))
     {
         fprintf(stderr, "[LSP] Error: missing required fields in 'textDocument'\n");
+        
         return false;
     }
 
@@ -273,7 +285,6 @@ complexity_task_complete_cb(struct runqueue * q, struct runqueue_task * t)
 
     if (ctx->output && ctx->output[0])
     {
-        fprintf(stderr, "[LSP] complexity output: %s\n", ctx->output);
         struct json_object * arr = json_tokener_parse(ctx->output);
 
         if (arr && json_object_is_type(arr, json_type_array))
@@ -291,10 +302,7 @@ complexity_task_complete_cb(struct runqueue * q, struct runqueue_task * t)
                 }
                 if (json_object_object_get_ex(item, "function_name", &name_obj))
                 {
-                    snprintf(
-                        func_name_buf, sizeof(func_name_buf), "%s",
-                        json_object_get_string(name_obj)
-                    );
+                    snprintf(func_name_buf, sizeof(func_name_buf), "%s", json_object_get_string(name_obj));
                 }
             }
         }
@@ -349,8 +357,10 @@ complexity_run_cb(struct runqueue * q, struct runqueue_task * t)
     char const * function_name = json_object_get_string(func_name_obj);
 
     fprintf(
-        stderr, "[LSP] complexity: uri=%s, function=%s\n",
-        uri ? uri : "(null)", function_name ? function_name : "(null)"
+        stderr,
+        "[LSP] complexity: uri=%s, function=%s\n",
+        uri ? uri : "(null)",
+        function_name ? function_name : "(null)"
     );
 
     if (!uri || !function_name)
@@ -369,8 +379,9 @@ complexity_run_cb(struct runqueue * q, struct runqueue_task * t)
     }
 
     /* Write document text to a temporary file. */
-    char tmp_pattern[] = "/tmp/c_tools_XXXXXX";
-    int tmp_fd = mkstemp(tmp_pattern);
+    char tmp_pattern[] = "/tmp/c_tools_XXXXXX.c";
+    int suffix_len = 2; /* ".c" */
+    int tmp_fd = mkstemps(tmp_pattern, suffix_len);
     if (tmp_fd < 0)
     {
         perror("mkstemp");
@@ -418,9 +429,10 @@ complexity_run_cb(struct runqueue * q, struct runqueue_task * t)
         return;
     }
 
+    int const num_inc_paths = ctx->svr->include_paths_count;
+
     if (pid == 0)
     {
-        /* Child process: redirect stdout to the pipe and exec the tool. */
         close(pipefds[0]);
 
         if (dup2(pipefds[1], STDOUT_FILENO) < 0)
@@ -429,19 +441,7 @@ complexity_run_cb(struct runqueue * q, struct runqueue_task * t)
         }
         close(pipefds[1]);
 
-        /* Build argv dynamically.
-         * With include paths: prog -j -f <func> -I <p1> -I <p2> ... <tmpfile> NULL
-         * Without:           prog --no-preprocess -j -f <func> <tmpfile> NULL
-         */
-        int const num_inc_paths = ctx->svr->include_paths_count;
-        int const use_preprocess_flag = (num_inc_paths == 0);
-        int const argc = 1                    /* program name */
-                       + (use_preprocess_flag ? 1 : 0)  /* --no-preprocess */
-                       + 2                    /* -j -f */
-                       + 1                    /* function name */
-                       + (num_inc_paths * 2)  /* -I path pairs */
-                       + 1                    /* temp path */
-                       + 1;                   /* NULL terminator */
+        int const argc = 1 + 2 + 1 + (num_inc_paths * 2) + 1 + 1;
         char ** argv = malloc((size_t)argc * sizeof(char *));
         if (!argv)
         {
@@ -450,10 +450,6 @@ complexity_run_cb(struct runqueue * q, struct runqueue_task * t)
 
         int arg_idx = 0;
         argv[arg_idx++] = "cyclomatic_complexity";
-        if (use_preprocess_flag)
-        {
-            argv[arg_idx++] = "--no-preprocess";
-        }
         argv[arg_idx++] = "-j";
         argv[arg_idx++] = "-f";
         argv[arg_idx++] = (char *)function_name;

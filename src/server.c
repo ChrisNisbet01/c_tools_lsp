@@ -24,8 +24,7 @@ typedef struct write_queue_entry_st
 static void
 check_exit_condition(rpc_server_st * svr)
 {
-    if (svr->eof_reached && list_empty(&svr->write_queue)
-        && list_empty(&svr->tool_queue.tasks_active.list))
+    if (svr->eof_reached && list_empty(&svr->write_queue) && list_empty(&svr->tool_queue.tasks_active.list))
     {
         uloop_end();
     }
@@ -210,7 +209,7 @@ handle_rpc_message(rpc_server_st * svr, struct json_object * msg)
     }
     else
     {
-        fprintf(stderr, "[LSP] Error: method '%s' not found (notification)\n", method_name);
+        fprintf(stderr, "[LSP] Unhandled notification: %s\n", method_name);
     }
 }
 
@@ -286,7 +285,6 @@ stdin_cb(struct uloop_fd * u, unsigned int events)
         uloop_end();
         return;
     }
-    fprintf(stderr, "[LSP] read %zd bytes (buf_len=%zu)\n", n, svr->buf_len);
 
     while (1)
     {
@@ -307,8 +305,7 @@ stdin_cb(struct uloop_fd * u, unsigned int events)
                 break;
             }
 
-            if (sscanf(content_len_str, "Content-Length: %d", &svr->content_length) != 1
-                || svr->content_length < 0)
+            if (sscanf(content_len_str, "Content-Length: %d", &svr->content_length) != 1 || svr->content_length < 0)
             {
                 fprintf(stderr, "Error: invalid Content-Length\n");
                 uloop_end();
