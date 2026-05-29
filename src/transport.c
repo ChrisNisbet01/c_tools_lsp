@@ -1,5 +1,6 @@
 #include "transport.h"
 
+#include "framing.h"
 #include "server.h"
 #include "utils.h"
 
@@ -98,78 +99,6 @@ append_to_buffer(rpc_server_st * svr, char const * data, size_t data_len)
     return true;
 }
 
-typedef enum
-{
-    READ_RESULT_SUCCESS,
-    READ_RESULT_ERROR,
-    READ_RESULT_NEED_MORE_DATA,
-} read_result_t;
-
-static read_result_t
-read_header(rpc_server_st * svr)
-{
-    char * content_len_str = strstr(svr->buf, "Content-Length: ");
-
-    if (content_len_str == NULL)
-    {
-        if (strstr(svr->buf, "\r\n\r\n"))
-        {
-            fprintf(stderr, "Error: missing Content-Length header\n");
-            return READ_RESULT_ERROR;
-        }
-        return READ_RESULT_NEED_MORE_DATA;
-    }
-
-    if (sscanf(content_len_str, "Content-Length: %d", &svr->content_length) != 1 || svr->content_length < 0)
-    {
-        fprintf(stderr, "Error: invalid Content-Length\n");
-        return READ_RESULT_ERROR;
-    }
-
-    char * header_end = strstr(svr->buf, "\r\n\r\n");
-    if (header_end == NULL)
-    {
-        return READ_RESULT_NEED_MORE_DATA;
-    }
-
-    size_t const header_consumed = (size_t)(header_end - svr->buf) + 4;
-    size_t const remaining = svr->buf_len - header_consumed;
-    memmove(svr->buf, svr->buf + header_consumed, remaining);
-    svr->buf_len = remaining;
-    svr->buf[svr->buf_len] = '\0';
-    svr->in_header = false;
-
-    return READ_RESULT_SUCCESS;
-}
-
-static read_result_t
-read_body(rpc_server_st * svr)
-{
-    if (svr->buf_len < (size_t)svr->content_length)
-    {
-        return READ_RESULT_NEED_MORE_DATA;
-    }
-
-    char saved = svr->buf[svr->content_length];
-    svr->buf[svr->content_length] = '\0';
-
-    if (svr->on_transport_msg != NULL)
-    {
-        svr->on_transport_msg(svr->buf, (size_t)svr->content_length, svr->on_transport_msg_data);
-    }
-
-    svr->buf[svr->content_length] = saved;
-
-    size_t const remaining = svr->buf_len - (size_t)svr->content_length;
-    memmove(svr->buf, svr->buf + svr->content_length, remaining);
-    svr->buf_len = remaining;
-    svr->buf[svr->buf_len] = '\0';
-    svr->content_length = -1;
-    svr->in_header = true;
-
-    return READ_RESULT_SUCCESS;
-}
-
 static void
 stdin_cb(struct uloop_fd * u, unsigned int events)
 {
@@ -216,28 +145,33 @@ stdin_cb(struct uloop_fd * u, unsigned int events)
         return;
     }
 
-    read_result_t read_result;
-    do
+    for (;;)
     {
-        if (svr->in_header)
+        size_t msg_offset, msg_len;
+        frame_decode_result_t r = svr->framing->decode(svr->framing, svr->buf, svr->buf_len, &msg_offset, &msg_len);
+
+        if (r == FRAME_NEED_MORE)
         {
-            read_result = read_header(svr);
-        }
-        else
-        {
-            read_result = read_body(svr);
+            break;
         }
 
-        if (read_result == READ_RESULT_ERROR)
+        if (r == FRAME_ERROR)
         {
             uloop_end();
             return;
         }
-        else if (read_result == READ_RESULT_NEED_MORE_DATA)
-        {
-            break;
-        }
-    } while (read_result == READ_RESULT_SUCCESS);
+
+        char saved = svr->buf[msg_offset + msg_len];
+        svr->buf[msg_offset + msg_len] = '\0';
+        svr->on_transport_msg(svr->buf + msg_offset, msg_len, svr->on_transport_msg_data);
+        svr->buf[msg_offset + msg_len] = saved;
+
+        size_t const consumed = msg_offset + msg_len;
+        size_t const remaining = svr->buf_len - consumed;
+        memmove(svr->buf, svr->buf + consumed, remaining);
+        svr->buf_len = remaining;
+        svr->buf[svr->buf_len] = '\0';
+    }
 }
 
 void
@@ -247,8 +181,6 @@ transport_init(rpc_server_st * svr)
     fcntl(svr->out_fd, F_SETFL, flags | O_NONBLOCK);
 
     INIT_LIST_HEAD(&svr->write_queue);
-    svr->in_header = true;
-    svr->content_length = -1;
 
     svr->stdin_fd.fd = svr->in_fd;
     svr->stdin_fd.cb = stdin_cb;

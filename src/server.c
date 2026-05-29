@@ -16,8 +16,8 @@ run_server(rpc_server_st * const svr, int const in_fd, int const out_fd)
     fprintf(stderr, "[LSP] Server starting on in_fd=%d, out_fd=%d\n", in_fd, out_fd);
     svr->out_fd = out_fd;
     svr->in_fd = in_fd;
-    svr->in_header = true;
-    svr->content_length = -1;
+
+    svr->framing = framing_content_length_create();
 
     documents_init();
 
@@ -38,6 +38,12 @@ run_server(rpc_server_st * const svr, int const in_fd, int const out_fd)
     runqueue_kill(&svr->tool_queue);
     documents_cleanup();
     transport_cleanup(svr);
+
+    if (svr->framing)
+    {
+        svr->framing->destroy(svr->framing);
+        svr->framing = NULL;
+    }
 
     for (int i = 0; i < svr->include_paths_count; i++)
     {

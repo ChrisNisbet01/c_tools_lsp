@@ -1,5 +1,7 @@
 #pragma once
 
+#include "framing.h"
+
 #include <json-c/json.h>
 #include <libubox/list.h>
 #include <libubox/runqueue.h>
@@ -29,7 +31,7 @@ typedef void (*transport_msg_cb)(char const * body, size_t len, void * user_data
 
 struct rpc_server_st
 {
-    /* --- Transport layer: I/O + Content-Length framing --- */
+    /* --- Transport layer: I/O + pluggable framing --- */
     int in_fd;
     int out_fd;
 
@@ -40,8 +42,8 @@ struct rpc_server_st
     char * buf;
     size_t buf_len;
     size_t buf_cap;
-    int content_length;
-    bool in_header;
+
+    framing_st * framing;
 
     transport_msg_cb on_transport_msg;
     void * on_transport_msg_data;

@@ -1,5 +1,6 @@
 #include "rpc.h"
 
+#include "framing.h"
 #include "server.h"
 #include "transport.h"
 #include "utils.h"
@@ -24,25 +25,18 @@ rpc_register_method(rpc_server_st * svr, char const * name, rpc_handler_fn handl
 }
 
 static void
-rpc_send_inner(rpc_server_st * svr, struct json_object * msg)
+rpc_send_json(rpc_server_st * svr, struct json_object * msg)
 {
     char const * json_str = json_object_to_json_string_ext(msg, JSON_C_TO_STRING_PLAIN);
-    size_t const json_len = strlen(json_str);
-
-    char header[64];
-    int hdr_len = snprintf(header, sizeof(header), "Content-Length: %zu\r\n\r\n", json_len);
-
-    size_t total_len = (size_t)hdr_len + json_len;
-    char * framed = malloc(total_len);
+    size_t framed_len;
+    char * framed = svr->framing->encode(svr->framing, json_str, strlen(json_str), &framed_len);
 
     if (framed == NULL)
     {
         return;
     }
-    memcpy(framed, header, (size_t)hdr_len);
-    memcpy(framed + (size_t)hdr_len, json_str, json_len);
 
-    transport_send(svr, framed, total_len);
+    transport_send(svr, framed, framed_len);
     free(framed);
 }
 
@@ -61,7 +55,7 @@ rpc_send_response(rpc_server_st * svr, struct json_object * id, struct json_obje
         json_object_object_add(msg, "id", NULL);
     }
 
-    rpc_send_inner(svr, msg);
+    rpc_send_json(svr, msg);
     json_object_put(msg);
 }
 
@@ -85,7 +79,7 @@ rpc_send_error(rpc_server_st * svr, struct json_object * id, int code, char cons
         json_object_object_add(msg, "id", NULL);
     }
 
-    rpc_send_inner(svr, msg);
+    rpc_send_json(svr, msg);
     json_object_put(msg);
 }
 

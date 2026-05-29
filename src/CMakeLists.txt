@@ -6,6 +6,7 @@ set(SOURCE_FILES
   server.c
   handlers.c
   documents.c
+  framing.c
   rpc.c
   transport.c
   tool_runner.c
