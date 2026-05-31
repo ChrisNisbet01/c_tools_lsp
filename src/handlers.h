@@ -1,5 +1,5 @@
 #pragma once
 
-#include "server.h"
+#include "rpc2.h"
 
-void rpc_server_register_handlers(rpc_server_st * svr);
+void rpc_server_register_handlers(struct rpc_ctx * ctx);

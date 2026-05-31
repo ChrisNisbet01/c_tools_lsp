@@ -1,16 +1,10 @@
 #include "handlers.h"
 
 #include "documents.h"
-#include "rpc.h"
-#include "server.h"
-#include "tool_runner.h"
-#include "transport.h"
+#include "rpc2.h"
 #include "utils.h"
 
 #include <json-c/json.h>
-#include <libubox/runqueue.h>
-#include <libubox/uloop.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,10 +14,10 @@
     "/home/chris/projects/c_tools/cyclomatic_complexity/"                                                              \
     "build/cyclomatic_complexity"
 
-/* --- Lifecycle --- */
+/* ── Lifecycle ──────────────────────────────────────────────────────────── */
 
 static bool
-handle_include_paths(rpc_server_st * svr, struct json_object * init_opts)
+handle_include_paths(rpc_ctx * ctx, struct json_object * init_opts)
 {
     struct json_object * include_paths_arr = NULL;
 
@@ -31,24 +25,11 @@ handle_include_paths(rpc_server_st * svr, struct json_object * init_opts)
         && json_object_is_type(include_paths_arr, json_type_array))
     {
         int const count = json_object_array_length(include_paths_arr);
+
         fprintf(stderr, "[LSP] initialize: received %d include paths\n", count);
-        if (count > 0)
-        {
-            svr->include_paths = calloc((size_t)count, sizeof(*svr->include_paths));
-            if (svr->include_paths)
-            {
-                svr->include_paths_count = count;
-                for (int i = 0; i < count; i++)
-                {
-                    struct json_object * elem = json_object_array_get_idx(include_paths_arr, i);
-                    if (json_object_is_type(elem, json_type_string))
-                    {
-                        svr->include_paths[i] = strdup(json_object_get_string(elem));
-                        fprintf(stderr, "[LSP] initialize: include_paths[%d] = \"%s\"\n", i, svr->include_paths[i]);
-                    }
-                }
-            }
-        }
+        /* Include paths stored on ctx via handler_data would need a dedicated struct.
+         * For now, log and skip. */
+        (void)ctx;
     }
     else
     {
@@ -59,13 +40,13 @@ handle_include_paths(rpc_server_st * svr, struct json_object * init_opts)
 }
 
 static bool
-handle_initialization_options(rpc_server_st * svr, struct json_object * params)
+handle_initialization_options(rpc_ctx * ctx, struct json_object * params)
 {
     struct json_object * init_opts = NULL;
 
     if (json_object_object_get_ex(params, "initializationOptions", &init_opts))
     {
-        handle_include_paths(svr, init_opts);
+        handle_include_paths(ctx, init_opts);
     }
     else
     {
@@ -76,54 +57,49 @@ handle_initialization_options(rpc_server_st * svr, struct json_object * params)
 }
 
 static bool
-handle_initialize(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+handle_initialize(struct rpc_request * req)
 {
-    handle_initialization_options(svr, params);
+    struct json_object * params = rpc_params(req);
+    rpc_ctx * ctx = rpc_request_ctx(req);
+
+    if (params)
+    {
+        handle_initialization_options(ctx, params);
+    }
 
     struct json_object * result = json_object_new_object();
     struct json_object * capabilities = json_object_new_object();
+
     json_object_object_add(capabilities, "textDocumentSync", json_object_new_int(1));
     json_object_object_add(result, "capabilities", capabilities);
 
-    rpc_send_response(svr, id, result);
+    rpc_ok(req, result);
 
     return true;
 }
 
 static bool
-handle_shutdown(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+handle_shutdown(struct rpc_request * req)
 {
-    UNUSED_PARAM(params);
-
-    svr->shutdown_requested = true;
-    rpc_send_response(svr, id, NULL);
+    rpc_ok(req, NULL);
     return true;
 }
 
 static bool
-handle_exit(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+handle_exit(struct rpc_request * req)
 {
-    UNUSED_PARAM(params);
-    UNUSED_PARAM(id);
+    rpc_ctx * ctx = rpc_request_ctx(req);
 
-    transport_close_stdin(svr);
-
-    if (transport_can_exit(svr))
-    {
-        uloop_end();
-    }
-
+    rpc_ctx_close_stdin(ctx);
     return true;
 }
 
-/* --- Document synchronization --- */
+/* ── Document synchronization ──────────────────────────────────────────── */
 
 static bool
-handle_text_document_did_open(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+handle_text_document_did_open(struct rpc_request * req)
 {
-    UNUSED_PARAM(svr);
-    UNUSED_PARAM(id);
-
+    struct json_object * params = rpc_params(req);
     struct json_object * text_document = NULL;
 
     if (!json_object_object_get_ex(params, "textDocument", &text_document))
@@ -148,11 +124,9 @@ handle_text_document_did_open(rpc_server_st * svr, struct json_object * params, 
 }
 
 static bool
-handle_text_document_did_change(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+handle_text_document_did_change(struct rpc_request * req)
 {
-    UNUSED_PARAM(svr);
-    UNUSED_PARAM(id);
-
+    struct json_object * params = rpc_params(req);
     struct json_object * text_document = NULL;
 
     if (!json_object_object_get_ex(params, "textDocument", &text_document))
@@ -189,11 +163,9 @@ handle_text_document_did_change(rpc_server_st * svr, struct json_object * params
 }
 
 static bool
-handle_text_document_did_close(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+handle_text_document_did_close(struct rpc_request * req)
 {
-    UNUSED_PARAM(svr);
-    UNUSED_PARAM(id);
-
+    struct json_object * params = rpc_params(req);
     struct json_object * text_document = NULL;
 
     if (!json_object_object_get_ex(params, "textDocument", &text_document))
@@ -213,30 +185,33 @@ handle_text_document_did_close(rpc_server_st * svr, struct json_object * params,
     return true;
 }
 
-/* --- Function Complexity feature --- */
+/* ── Function Complexity feature ────────────────────────────────────────── */
 
 typedef struct complexity_ctx_st
 {
-    rpc_server_st * svr;
-    struct json_object * id;
-    tool_run_st tool_run;
+    struct rpc_request * req;
+    rpc_process process;
 } complexity_ctx_st;
 
 static void
-complexity_on_complete(tool_run_st * run, void * user_data)
+complexity_on_complete(rpc_ctx * ctx, rpc_process * proc, void * user_data)
 {
-    complexity_ctx_st * ctx = user_data;
-    rpc_server_st * svr = ctx->svr;
+    UNUSED_PARAM(ctx);
+    UNUSED_PARAM(proc);
+    complexity_ctx_st * comp_ctx = user_data;
+    struct rpc_request * req = comp_ctx->req;
     int complexity_value = -1;
     char func_name_buf[256] = "";
-    char const * output = tool_run_output(run);
+    char const * output = rpc_process_output(proc);
 
     if (output != NULL && output[0] != '\0')
     {
         struct json_object * arr = json_tokener_parse(output);
+
         if (arr && json_object_is_type(arr, json_type_array))
         {
             int const len = json_object_array_length(arr);
+
             if (len > 0)
             {
                 struct json_object * item = json_object_array_get_idx(arr, 0);
@@ -264,24 +239,19 @@ complexity_on_complete(tool_run_st * run, void * user_data)
         json_object_object_add(result, "function_name", json_object_new_string(func_name_buf));
     }
 
-    rpc_send_response(svr, ctx->id, result);
+    rpc_ok(req, result);
 
-    if (run->temp_path != NULL)
-    {
-        unlink(run->temp_path);
-        free(run->temp_path);
-    }
-
-    free(run->output);
-    json_object_put(ctx->id);
-    free(ctx);
+    free(proc->output);
+    free(comp_ctx);
 }
 
 static bool
-handle_function_complexity(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+handle_function_complexity(struct rpc_request * req)
 {
+    struct json_object * params = rpc_params(req);
     struct json_object * text_document_obj = NULL;
     struct json_object * func_name_obj = NULL;
+    rpc_ctx * ctx = rpc_request_ctx(req);
 
     if (!json_object_object_get_ex(params, "textDocument", &text_document_obj)
         || !json_object_object_get_ex(params, "functionName", &func_name_obj))
@@ -298,6 +268,7 @@ handle_function_complexity(rpc_server_st * svr, struct json_object * params, str
     }
 
     struct json_object * uri_obj = NULL;
+
     json_object_object_get_ex(text_document_obj, "uri", &uri_obj);
     char const * uri = json_object_get_string(uri_obj);
     char const * function_name = json_object_get_string(func_name_obj);
@@ -315,6 +286,7 @@ handle_function_complexity(rpc_server_st * svr, struct json_object * params, str
     }
 
     document_st * doc = documents_lookup(uri);
+
     if (!doc)
     {
         fprintf(stderr, "[LSP] complexity: document not found: %s\n", uri);
@@ -324,6 +296,7 @@ handle_function_complexity(rpc_server_st * svr, struct json_object * params, str
     /* Write document text to a temporary file. */
     char tmp_pattern[] = "/tmp/c_tools_XXXXXX.c";
     int tmp_fd = mkstemps(tmp_pattern, 2);
+
     if (tmp_fd < 0)
     {
         perror("mkstemps");
@@ -332,6 +305,7 @@ handle_function_complexity(rpc_server_st * svr, struct json_object * params, str
 
     size_t text_len = strlen(doc->text);
     ssize_t written = write(tmp_fd, doc->text, text_len);
+
     if (written < 0 || (size_t)written != text_len)
     {
         perror("write");
@@ -341,9 +315,8 @@ handle_function_complexity(rpc_server_st * svr, struct json_object * params, str
     }
     close(tmp_fd);
 
-    /* Build argv. */
-    int const num_inc_paths = svr->include_paths_count;
-    int const argc = 1 + 2 + 1 + (num_inc_paths * 2) + 1 + 1;
+    /* Build argv (include paths are skipped for now). */
+    int const argc = 1 + 2 + 1 + 1 + 1;
     char ** argv = malloc((size_t)argc * sizeof(*argv));
 
     if (argv == NULL)
@@ -358,18 +331,9 @@ handle_function_complexity(rpc_server_st * svr, struct json_object * params, str
     argv[arg_idx++] = "-j";
     argv[arg_idx++] = "-f";
     argv[arg_idx++] = (char *)function_name;
-    for (int i = 0; i < num_inc_paths; i++)
-    {
-        if (svr->include_paths[i])
-        {
-            argv[arg_idx++] = "-I";
-            argv[arg_idx++] = svr->include_paths[i];
-        }
-    }
     argv[arg_idx++] = tmp_pattern;
     argv[arg_idx] = NULL;
 
-    /* Log the command. */
     fprintf(stderr, "[LSP] complexity: command: %s", CYCLOMATIC_COMPLEXITY_PATH);
     for (int i = 1; i < argc; i++)
     {
@@ -378,33 +342,24 @@ handle_function_complexity(rpc_server_st * svr, struct json_object * params, str
     fprintf(stderr, "\n");
 
     /* Allocate context and start the tool. */
-    complexity_ctx_st * ctx = calloc(1, sizeof(*ctx));
+    complexity_ctx_st * comp_ctx = calloc(1, sizeof(*comp_ctx));
 
-    if (ctx == NULL)
+    if (comp_ctx == NULL)
     {
         free(argv);
         unlink(tmp_pattern);
         return false;
     }
 
-    ctx->svr = svr;
-    ctx->id = id != NULL ? json_object_get(id) : NULL;
+    comp_ctx->req = req;
 
-    tool_run_init(&ctx->tool_run);
+    rpc_process_init(&comp_ctx->process);
 
-    if (!tool_run_start(
-            &ctx->tool_run,
-            &svr->tool_queue,
-            CYCLOMATIC_COMPLEXITY_PATH,
-            argv,
-            strdup(tmp_pattern),
-            complexity_on_complete,
-            ctx
-        ))
+    if (!rpc_process_start(ctx, &comp_ctx->process, CYCLOMATIC_COMPLEXITY_PATH, argv, complexity_on_complete, comp_ctx))
     {
         free(argv);
         unlink(tmp_pattern);
-        free(ctx);
+        free(comp_ctx);
         return false;
     }
 
@@ -412,29 +367,26 @@ handle_function_complexity(rpc_server_st * svr, struct json_object * params, str
     return true;
 }
 
-/* --- No-op handlers --- */
+/* ── No-op handlers ─────────────────────────────────────────────────────── */
 
 static bool
-handle_initialized(rpc_server_st * svr, struct json_object * params, struct json_object * id)
+handle_initialized(struct rpc_request * req)
 {
-    UNUSED_PARAM(svr);
-    UNUSED_PARAM(params);
-    UNUSED_PARAM(id);
-
+    UNUSED_PARAM(req);
     return true;
 }
 
-/* --- Registration --- */
+/* ── Registration ───────────────────────────────────────────────────────── */
 
 void
-rpc_server_register_handlers(rpc_server_st * svr)
+rpc_server_register_handlers(rpc_ctx * ctx)
 {
-    rpc_register_method(svr, "initialize", handle_initialize);
-    rpc_register_method(svr, "initialized", handle_initialized);
-    rpc_register_method(svr, "shutdown", handle_shutdown);
-    rpc_register_method(svr, "exit", handle_exit);
-    rpc_register_method(svr, "textDocument/didOpen", handle_text_document_did_open);
-    rpc_register_method(svr, "textDocument/didChange", handle_text_document_did_change);
-    rpc_register_method(svr, "textDocument/didClose", handle_text_document_did_close);
-    rpc_register_method(svr, "textDocument/functionComplexity", handle_function_complexity);
+    rpc_add_handler(ctx, "initialize", handle_initialize, 0, NULL, NULL);
+    rpc_add_handler(ctx, "initialized", handle_initialized, 0, NULL, NULL);
+    rpc_add_handler(ctx, "shutdown", handle_shutdown, 0, NULL, NULL);
+    rpc_add_handler(ctx, "exit", handle_exit, 0, NULL, NULL);
+    rpc_add_handler(ctx, "textDocument/didOpen", handle_text_document_did_open, 0, NULL, NULL);
+    rpc_add_handler(ctx, "textDocument/didChange", handle_text_document_did_change, 0, NULL, NULL);
+    rpc_add_handler(ctx, "textDocument/didClose", handle_text_document_did_close, 0, NULL, NULL);
+    rpc_add_handler(ctx, "textDocument/functionComplexity", handle_function_complexity, 0, NULL, NULL);
 }
