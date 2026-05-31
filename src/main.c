@@ -1,3 +1,4 @@
+#include "app_state.h"
 #include "server.h"
 
 #include <getopt.h>
@@ -26,7 +27,20 @@ main(int argc, char ** argv)
         }
     }
 
-    run_server(STDIN_FILENO, STDOUT_FILENO);
+    app_state state = {
+        .argc = argc,
+        .argv = argv,
+        .include_paths = NULL,
+        .include_paths_count = 0,
+    };
+
+    run_server(STDIN_FILENO, STDOUT_FILENO, &state);
+
+    for (int i = 0; i < state.include_paths_count; i++)
+    {
+        free(state.include_paths[i]);
+    }
+    free(state.include_paths);
 
     return EXIT_SUCCESS;
 }

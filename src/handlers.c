@@ -1,5 +1,6 @@
 #include "handlers.h"
 
+#include "app_state.h"
 #include "documents.h"
 #include "rpc2.h"
 #include "utils.h"
@@ -17,36 +18,55 @@
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
 
 static bool
-handle_include_paths(rpc_ctx * ctx, struct json_object * init_opts)
+handle_include_paths(app_state * state, struct json_object * init_opts)
 {
     struct json_object * include_paths_arr = NULL;
 
-    if (json_object_object_get_ex(init_opts, "includePaths", &include_paths_arr)
-        && json_object_is_type(include_paths_arr, json_type_array))
-    {
-        int const count = json_object_array_length(include_paths_arr);
-
-        fprintf(stderr, "[LSP] initialize: received %d include paths\n", count);
-        /* Include paths stored on ctx via handler_data would need a dedicated struct.
-         * For now, log and skip. */
-        (void)ctx;
-    }
-    else
+    if (!json_object_object_get_ex(init_opts, "includePaths", &include_paths_arr)
+        || !json_object_is_type(include_paths_arr, json_type_array))
     {
         fprintf(stderr, "[LSP] initialize: no includePaths in initializationOptions\n");
+        return true;
+    }
+
+    int const count = json_object_array_length(include_paths_arr);
+
+    fprintf(stderr, "[LSP] initialize: received %d include paths\n", count);
+
+    if (count == 0)
+    {
+        return true;
+    }
+
+    state->include_paths = calloc((size_t)count, sizeof(*state->include_paths));
+    if (!state->include_paths)
+    {
+        return true;
+    }
+
+    state->include_paths_count = count;
+    for (int i = 0; i < count; i++)
+    {
+        struct json_object * elem = json_object_array_get_idx(include_paths_arr, i);
+
+        if (json_object_is_type(elem, json_type_string))
+        {
+            state->include_paths[i] = strdup(json_object_get_string(elem));
+            fprintf(stderr, "[LSP] initialize: include_paths[%d] = \"%s\"\n", i, state->include_paths[i]);
+        }
     }
 
     return true;
 }
 
 static bool
-handle_initialization_options(rpc_ctx * ctx, struct json_object * params)
+handle_initialization_options(app_state * state, struct json_object * params)
 {
     struct json_object * init_opts = NULL;
 
     if (json_object_object_get_ex(params, "initializationOptions", &init_opts))
     {
-        handle_include_paths(ctx, init_opts);
+        handle_include_paths(state, init_opts);
     }
     else
     {
@@ -60,11 +80,11 @@ static bool
 handle_initialize(struct rpc_request * req)
 {
     struct json_object * params = rpc_params(req);
-    rpc_ctx * ctx = rpc_request_ctx(req);
+    app_state * state = rpc_handler_data(req);
 
-    if (params)
+    if (params && state)
     {
-        handle_initialization_options(ctx, params);
+        handle_initialization_options(state, params);
     }
 
     struct json_object * result = json_object_new_object();
@@ -251,6 +271,7 @@ handle_function_complexity(struct rpc_request * req)
     struct json_object * params = rpc_params(req);
     struct json_object * text_document_obj = NULL;
     struct json_object * func_name_obj = NULL;
+    app_state * state = rpc_handler_data(req);
     rpc_ctx * ctx = rpc_request_ctx(req);
 
     if (!json_object_object_get_ex(params, "textDocument", &text_document_obj)
@@ -315,8 +336,9 @@ handle_function_complexity(struct rpc_request * req)
     }
     close(tmp_fd);
 
-    /* Build argv (include paths are skipped for now). */
-    int const argc = 1 + 2 + 1 + 1 + 1;
+    /* Build argv with include paths from LSP initialization options. */
+    int const num_inc_paths = state ? state->include_paths_count : 0;
+    int const argc = 1 + 2 + 1 + (num_inc_paths * 2) + 1 + 1;
     char ** argv = malloc((size_t)argc * sizeof(*argv));
 
     if (argv == NULL)
@@ -331,6 +353,14 @@ handle_function_complexity(struct rpc_request * req)
     argv[arg_idx++] = "-j";
     argv[arg_idx++] = "-f";
     argv[arg_idx++] = (char *)function_name;
+    for (int i = 0; i < num_inc_paths; i++)
+    {
+        if (state->include_paths[i])
+        {
+            argv[arg_idx++] = "-I";
+            argv[arg_idx++] = state->include_paths[i];
+        }
+    }
     argv[arg_idx++] = tmp_pattern;
     argv[arg_idx] = NULL;
 
@@ -379,14 +409,14 @@ handle_initialized(struct rpc_request * req)
 /* ── Registration ───────────────────────────────────────────────────────── */
 
 void
-rpc_server_register_handlers(rpc_ctx * ctx)
+rpc_server_register_handlers(rpc_ctx * ctx, app_state * state)
 {
-    rpc_add_handler(ctx, "initialize", handle_initialize, 0, NULL, NULL);
+    rpc_add_handler(ctx, "initialize", handle_initialize, 0, NULL, state);
     rpc_add_handler(ctx, "initialized", handle_initialized, 0, NULL, NULL);
     rpc_add_handler(ctx, "shutdown", handle_shutdown, 0, NULL, NULL);
     rpc_add_handler(ctx, "exit", handle_exit, 0, NULL, NULL);
     rpc_add_handler(ctx, "textDocument/didOpen", handle_text_document_did_open, 0, NULL, NULL);
     rpc_add_handler(ctx, "textDocument/didChange", handle_text_document_did_change, 0, NULL, NULL);
     rpc_add_handler(ctx, "textDocument/didClose", handle_text_document_did_close, 0, NULL, NULL);
-    rpc_add_handler(ctx, "textDocument/functionComplexity", handle_function_complexity, 0, NULL, NULL);
+    rpc_add_handler(ctx, "textDocument/functionComplexity", handle_function_complexity, 0, NULL, state);
 }

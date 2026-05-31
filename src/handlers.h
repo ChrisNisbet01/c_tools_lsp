@@ -2,4 +2,6 @@
 
 #include "rpc2.h"
 
-void rpc_server_register_handlers(struct rpc_ctx * ctx);
+typedef struct app_state app_state;
+
+void rpc_server_register_handlers(struct rpc_ctx * ctx, app_state * state);
