@@ -3,8 +3,8 @@
 #include "app_state.h"
 #include "documents.h"
 #include "handlers.h"
-#include "rpc2.h"
 
+#include <rpc2/rpc2.h>
 #include <stdio.h>
 #include <stdlib.h>
 

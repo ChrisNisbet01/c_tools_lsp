@@ -2,7 +2,6 @@
 
 #include "app_state.h"
 #include "documents.h"
-#include "rpc2.h"
 #include "utils.h"
 
 #include <json-c/json.h>
@@ -338,8 +337,8 @@ handle_function_complexity(struct rpc_request * req)
 
     /* Build argv with include paths from LSP initialization options. */
     int const num_inc_paths = state ? state->include_paths_count : 0;
-    int const argc = 1 + 2 + 1 + (num_inc_paths * 2) + 1 + 1;
-    char ** argv = malloc((size_t)argc * sizeof(*argv));
+    int const argc = 1 + 2 + 1 + (num_inc_paths * 2) + 1;      /* tool name + 3 fixed args + include paths + filename */
+    char ** argv = malloc((size_t)(argc + 1) * sizeof(*argv)); /* Include 1 extra for NULL terminator. */
 
     if (argv == NULL)
     {

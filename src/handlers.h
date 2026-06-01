@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rpc2.h"
+#include <rpc2/rpc2.h>
 
 typedef struct app_state app_state;
 
