@@ -10,9 +10,9 @@
 #include <string.h>
 #include <unistd.h>
 
-#define CYCLOMATIC_COMPLEXITY_PATH                                                                                     \
-    "/home/chris/projects/c_tools/cyclomatic_complexity/"                                                              \
-    "build/cyclomatic_complexity"
+#ifndef CYCLOMATIC_COMPLEXITY_PATH_DEFAULT
+#define CYCLOMATIC_COMPLEXITY_PATH_DEFAULT "/usr/local/bin/cyclomatic_complexity"
+#endif
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
 
@@ -58,6 +58,28 @@ handle_include_paths(app_state * state, struct json_object * init_opts)
     return true;
 }
 
+static void
+handle_complexity_tool_path(app_state * state, struct json_object * init_opts)
+{
+    struct json_object * path_obj = NULL;
+
+    if (!json_object_object_get_ex(init_opts, "cyclomaticComplexityPath", &path_obj)
+        || !json_object_is_type(path_obj, json_type_string))
+    {
+        fprintf(stderr, "[LSP] initialize: no cyclomaticComplexityPath in initializationOptions\n");
+        return;
+    }
+
+    char const * path = json_object_get_string(path_obj);
+
+    if (path && path[0] != '\0')
+    {
+        free(state->complexity_tool_path);
+        state->complexity_tool_path = strdup(path);
+        fprintf(stderr, "[LSP] initialize: cyclomaticComplexityPath = \"%s\"\n", state->complexity_tool_path);
+    }
+}
+
 static bool
 handle_initialization_options(app_state * state, struct json_object * params)
 {
@@ -66,6 +88,7 @@ handle_initialization_options(app_state * state, struct json_object * params)
     if (json_object_object_get_ex(params, "initializationOptions", &init_opts))
     {
         handle_include_paths(state, init_opts);
+        handle_complexity_tool_path(state, init_opts);
     }
     else
     {
@@ -205,6 +228,16 @@ handle_text_document_did_close(struct rpc_request * req)
 }
 
 /* ── Function Complexity feature ────────────────────────────────────────── */
+
+static char const *
+get_complexity_tool_path(app_state * state)
+{
+    if (state && state->complexity_tool_path)
+    {
+        return state->complexity_tool_path;
+    }
+    return CYCLOMATIC_COMPLEXITY_PATH_DEFAULT;
+}
 
 typedef struct complexity_ctx_st
 {
@@ -363,7 +396,9 @@ handle_function_complexity(struct rpc_request * req)
     argv[arg_idx++] = tmp_pattern;
     argv[arg_idx] = NULL;
 
-    fprintf(stderr, "[LSP] complexity: command: %s", CYCLOMATIC_COMPLEXITY_PATH);
+    char const * tool_path = get_complexity_tool_path(state);
+
+    fprintf(stderr, "[LSP] complexity: command: %s", tool_path);
     for (int i = 1; i < argc; i++)
     {
         fprintf(stderr, " %s", argv[i]);
@@ -384,7 +419,7 @@ handle_function_complexity(struct rpc_request * req)
 
     rpc_process_init(&comp_ctx->process);
 
-    if (!rpc_process_start(ctx, &comp_ctx->process, CYCLOMATIC_COMPLEXITY_PATH, argv, complexity_on_complete, comp_ctx))
+    if (!rpc_process_start(ctx, &comp_ctx->process, tool_path, argv, complexity_on_complete, comp_ctx))
     {
         free(argv);
         unlink(tmp_pattern);

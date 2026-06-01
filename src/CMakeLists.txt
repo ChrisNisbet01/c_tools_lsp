@@ -19,3 +19,10 @@ target_link_libraries(${APP}
 )
 
 target_compile_features(${APP} PRIVATE c_std_11)
+
+set(CYCLOMATIC_COMPLEXITY_PATH_DEFAULT "/usr/local/bin/cyclomatic_complexity"
+    CACHE STRING "Default path to the cyclomatic_complexity executable")
+target_compile_definitions(${APP} PRIVATE
+    CYCLOMATIC_COMPLEXITY_PATH_DEFAULT="${CYCLOMATIC_COMPLEXITY_PATH_DEFAULT}")
+
+install(TARGETS ${APP} RUNTIME DESTINATION bin)

@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const vscode = require('vscode');
 const { LanguageClient } = require('vscode-languageclient/node');
 
@@ -9,7 +10,13 @@ function activate(context) {
   let serverPath = config.get('serverPath', '');
 
   if (!serverPath) {
-    serverPath = path.resolve(__dirname, '..', 'build', 'src', 'c_tools_lsp');
+    const devPath = path.resolve(__dirname, '..', 'build', 'src', 'c_tools_lsp');
+    try {
+      fs.accessSync(devPath, fs.constants.X_OK);
+      serverPath = devPath;
+    } catch {
+      serverPath = 'c_tools_lsp';
+    }
   }
 
   const serverOptions = {
@@ -17,12 +24,18 @@ function activate(context) {
     args: [],
   };
 
+  const compToolPath = config.get('cyclomaticComplexityPath', '');
+  const initOpts = {
+    includePaths: config.get('includePaths', [])
+  };
+  if (compToolPath) {
+    initOpts.cyclomaticComplexityPath = compToolPath;
+  }
+
   const clientOptions = {
     documentSelector: [{ scheme: 'file', language: 'c' }],
     trace: 'verbose',
-    initializationOptions: {
-      includePaths: vscode.workspace.getConfiguration('cToolsLsp').get('includePaths', [])
-    }
+    initializationOptions: initOpts,
   };
 
   client = new LanguageClient('cToolsLsp', 'C Tools LSP', serverOptions, clientOptions);

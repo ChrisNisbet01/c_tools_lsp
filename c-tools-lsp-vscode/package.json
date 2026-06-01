@@ -48,13 +48,18 @@
         "cToolsLsp.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the c_tools_lsp server binary. If empty, looks next to the extension."
+          "description": "Path to the c_tools_lsp server binary. If empty, checks the build directory next to the extension, then falls back to PATH."
         },
         "cToolsLsp.includePaths": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],
           "description": "Include paths to pass to the cyclomatic complexity tool for preprocessing."
+        },
+        "cToolsLsp.cyclomaticComplexityPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the cyclomatic_complexity executable. If empty, uses the server's compiled-in default."
         }
       }
     }
