@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(c_tools_lsp C)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 option(WITH_UNIT_TESTS OFF)
 
 set(CMAKE_C_STANDARD 11)

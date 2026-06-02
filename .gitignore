@@ -3,3 +3,6 @@
 
 /data/pythagora.log
 /.vscode/c_cpp_properties.json
+/.cache/
+/compile_commands.json
+/.vscode/
